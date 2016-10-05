@@ -1215,7 +1215,6 @@ bad_encoding:
         (*config->log)(LOG_ERR, "read of block %0*jx returned unexpected encoding \"%s\"",
           S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, layer);
         r = EIO;
-        break;
     }
 
     /* Check for wrong length read */
