@@ -1136,8 +1136,8 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
         if (io.dest == NULL)
             goto bad_encoding;
 
-        /* Check for encryption (which must have been applied after compression) */
-        if (strncasecmp(layer, CONTENT_ENCODING_ENCRYPT "-", sizeof(CONTENT_ENCODING_ENCRYPT)) == 0) {
+        /* Assume encryption (which must have been applied after compression) */
+        {
             const char *const block_cipher = layer + sizeof(CONTENT_ENCODING_ENCRYPT);
             u_char hmac[SHA_DIGEST_LENGTH];
             u_char *buf;
@@ -1193,8 +1193,8 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
             continue;
         }
 
-        /* Check for compression */
-        if (strcasecmp(layer, CONTENT_ENCODING_DEFLATE) == 0) {
+        /* Assume compression */
+        {
             u_long uclen = config->block_size;
 
             switch (uncompress(dest, &uclen, io.dest, did_read)) {
