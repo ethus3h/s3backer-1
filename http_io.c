@@ -1237,12 +1237,6 @@ bad_encoding:
         break;
     }
 
-    /* Check for required encryption */
-    if (r == 0 && config->encryption != NULL && !encrypted) {
-        (*config->log)(LOG_ERR, "block %0*jx was supposed to be encrypted but wasn't", S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
-        r = EIO;
-    }
-
     /* Check for wrong length read */
     if (r == 0 && did_read != config->block_size) {
         (*config->log)(LOG_ERR, "read of block %0*jx returned %lu != %lu bytes",
