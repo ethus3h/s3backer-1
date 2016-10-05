@@ -1138,7 +1138,6 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
             (*config->log)(LOG_ERR, "block %0*jx is encrypted with `%s' but `--encrypt' was not specified",
               S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, block_cipher);
             r = EIO;
-            break;
         }
 
         /* Verify encryption type */
@@ -1146,7 +1145,6 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
             (*config->log)(LOG_ERR, "block %0*jx was encrypted using `%s' but `%s' encryption is configured",
               S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, block_cipher, EVP_CIPHER_name(priv->cipher));
             r = EIO;
-            break;
         }
 
         /* Verify block's signature */
@@ -1154,14 +1152,12 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
             (*config->log)(LOG_ERR, "block %0*jx is encrypted, but no signature was found",
               S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
             r = EIO;
-            break;
         }
         http_io_authsig(priv, block_num, io.dest, did_read, hmac);
         if (memcmp(io.hmac, hmac, sizeof(hmac)) != 0) {
             (*config->log)(LOG_ERR, "block %0*jx has an incorrect signature (did you provide the right password?)",
               S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
             r = EIO;
-            break;
         }
 
         /* Allocate buffer for the decrypted data */
@@ -1171,7 +1167,6 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
             priv->stats.out_of_memory_errors++;
             pthread_mutex_unlock(&priv->mutex);
             r = ENOMEM;
-            break;
         }
 
         /* Decrypt the block */
@@ -1181,7 +1176,6 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
 
         /* Proceed */
         encrypted = 1;
-        continue;
     }
 
     /* Assume compression */
