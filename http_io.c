@@ -64,6 +64,7 @@
 #define HMAC_HEADER                 "x-amz-meta-s3backer-hmac"
 #define IF_MATCH_HEADER             "If-Match"
 #define IF_NONE_MATCH_HEADER        "If-None-Match"
+#define CONTENT_ENCODING_BYPASS     "deflate, encrypt-AES-128-CBC"
 
 /* MIME type for blocks */
 #define CONTENT_TYPE                "application/x-s3backer-block"
@@ -1124,13 +1125,13 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
     did_read = io.buf_size - io.bufs.rdremain;
 
     /* Check Content-Encoding and decode if necessary */
-    for ( ; r == 0 && *io.content_encoding != '\0'; *layer = '\0') {
+    for ( ; r == 0 && *CONTENT_ENCODING_BYPASS != '\0'; *layer = '\0') {
 
         /* Find next encoding layer */
-        if ((layer = strrchr(io.content_encoding, ',')) != NULL)
+        if ((layer = strrchr(CONTENT_ENCODING_BYPASS, ',')) != NULL)
             *layer++ = '\0';
         else
-            layer = io.content_encoding;
+            layer = CONTENT_ENCODING_BYPASS;
 
         /* Sanity check */
         if (io.dest == NULL)
