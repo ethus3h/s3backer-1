@@ -1123,97 +1123,123 @@ http_io_read_block(struct s3backer_store *const s3b, s3b_block_t block_num, void
     /* Determine how many bytes we read */
     did_read = io.buf_size - io.bufs.rdremain;
 
-    /* Sanity check */
-    if (io.dest == NULL)
-        goto bad_encoding;
+    /* Check Content-Encoding and decode if necessary */
+    for ( ; r == 0 && *io.content_encoding != '\0'; *layer = '\0') {
 
-    /* Assume encryption (which must have been applied after compression) */
-    {
-        const char *const block_cipher = layer + sizeof(CONTENT_ENCODING_ENCRYPT);
-        u_char hmac[SHA_DIGEST_LENGTH];
-        u_char *buf;
+        /* Find next encoding layer */
+        if ((layer = strrchr(io.content_encoding, ',')) != NULL)
+            *layer++ = '\0';
+        else
+            layer = io.content_encoding;
 
-        /* Encryption must be enabled */
-        if (config->encryption == NULL) {
-            (*config->log)(LOG_ERR, "block %0*jx is encrypted with `%s' but `--encrypt' was not specified",
-              S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, block_cipher);
-            r = EIO;
+        /* Sanity check */
+        if (io.dest == NULL)
+            goto bad_encoding;
+
+        /* Check for encryption (which must have been applied after compression) */
+        if (strncasecmp(layer, CONTENT_ENCODING_ENCRYPT "-", sizeof(CONTENT_ENCODING_ENCRYPT)) == 0) {
+            const char *const block_cipher = layer + sizeof(CONTENT_ENCODING_ENCRYPT);
+            u_char hmac[SHA_DIGEST_LENGTH];
+            u_char *buf;
+
+            /* Encryption must be enabled */
+            if (config->encryption == NULL) {
+                (*config->log)(LOG_ERR, "block %0*jx is encrypted with `%s' but `--encrypt' was not specified",
+                  S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, block_cipher);
+                r = EIO;
+                break;
+            }
+
+            /* Verify encryption type */
+            if (strcasecmp(block_cipher, EVP_CIPHER_name(priv->cipher)) != 0) {
+                (*config->log)(LOG_ERR, "block %0*jx was encrypted using `%s' but `%s' encryption is configured",
+                  S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, block_cipher, EVP_CIPHER_name(priv->cipher));
+                r = EIO;
+                break;
+            }
+
+            /* Verify block's signature */
+            if (memcmp(io.hmac, zero_hmac, sizeof(io.hmac)) == 0) {
+                (*config->log)(LOG_ERR, "block %0*jx is encrypted, but no signature was found",
+                  S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
+                r = EIO;
+                break;
+            }
+            http_io_authsig(priv, block_num, io.dest, did_read, hmac);
+            if (memcmp(io.hmac, hmac, sizeof(hmac)) != 0) {
+                (*config->log)(LOG_ERR, "block %0*jx has an incorrect signature (did you provide the right password?)",
+                  S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
+                r = EIO;
+                break;
+            }
+
+            /* Allocate buffer for the decrypted data */
+            if ((buf = malloc(did_read + EVP_MAX_IV_LENGTH)) == NULL) {
+                (*config->log)(LOG_ERR, "malloc: %s", strerror(errno));
+                pthread_mutex_lock(&priv->mutex);
+                priv->stats.out_of_memory_errors++;
+                pthread_mutex_unlock(&priv->mutex);
+                r = ENOMEM;
+                break;
+            }
+
+            /* Decrypt the block */
+            did_read = http_io_crypt(priv, block_num, 0, io.dest, did_read, buf);
+            memcpy(io.dest, buf, did_read);
+            free(buf);
+
+            /* Proceed */
+            encrypted = 1;
+            continue;
         }
 
-        /* Verify encryption type */
-        if (strcasecmp(block_cipher, EVP_CIPHER_name(priv->cipher)) != 0) {
-            (*config->log)(LOG_ERR, "block %0*jx was encrypted using `%s' but `%s' encryption is configured",
-              S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, block_cipher, EVP_CIPHER_name(priv->cipher));
-            r = EIO;
-        }
+        /* Check for compression */
+        if (strcasecmp(layer, CONTENT_ENCODING_DEFLATE) == 0) {
+            u_long uclen = config->block_size;
 
-        /* Verify block's signature */
-        if (memcmp(io.hmac, zero_hmac, sizeof(io.hmac)) == 0) {
-            (*config->log)(LOG_ERR, "block %0*jx is encrypted, but no signature was found",
-              S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
-            r = EIO;
-        }
-        http_io_authsig(priv, block_num, io.dest, did_read, hmac);
-        if (memcmp(io.hmac, hmac, sizeof(hmac)) != 0) {
-            (*config->log)(LOG_ERR, "block %0*jx has an incorrect signature (did you provide the right password?)",
-              S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
-            r = EIO;
-        }
+            switch (uncompress(dest, &uclen, io.dest, did_read)) {
+            case Z_OK:
+                did_read = uclen;
+                free(io.dest);
+                io.dest = NULL;         /* compression should have been first */
+                r = 0;
+                break;
+            case Z_MEM_ERROR:
+                (*config->log)(LOG_ERR, "zlib uncompress: %s", strerror(ENOMEM));
+                pthread_mutex_lock(&priv->mutex);
+                priv->stats.out_of_memory_errors++;
+                pthread_mutex_unlock(&priv->mutex);
+                r = ENOMEM;
+                break;
+            case Z_BUF_ERROR:
+                (*config->log)(LOG_ERR, "zlib uncompress: %s", "decompressed block is oversize");
+                r = EIO;
+                break;
+            case Z_DATA_ERROR:
+                (*config->log)(LOG_ERR, "zlib uncompress: %s", "data is corrupted or truncated");
+                r = EIO;
+                break;
+            default:
+                (*config->log)(LOG_ERR, "unknown zlib compress2() error %d", r);
+                r = EIO;
+                break;
+            }
 
-        /* Allocate buffer for the decrypted data */
-        if ((buf = malloc(did_read + EVP_MAX_IV_LENGTH)) == NULL) {
-            (*config->log)(LOG_ERR, "malloc: %s", strerror(errno));
-            pthread_mutex_lock(&priv->mutex);
-            priv->stats.out_of_memory_errors++;
-            pthread_mutex_unlock(&priv->mutex);
-            r = ENOMEM;
-        }
-
-        /* Decrypt the block */
-        did_read = http_io_crypt(priv, block_num, 0, io.dest, did_read, buf);
-        memcpy(io.dest, buf, did_read);
-        free(buf);
-
-        /* Proceed */
-        encrypted = 1;
-    }
-
-    /* Assume compression */
-    {
-        u_long uclen = config->block_size;
-
-        switch (uncompress(dest, &uclen, io.dest, did_read)) {
-        case Z_OK:
-            did_read = uclen;
-            free(io.dest);
-            io.dest = NULL;         /* compression should have been first */
-            r = 0;
-            break;
-        case Z_MEM_ERROR:
-            (*config->log)(LOG_ERR, "zlib uncompress: %s", strerror(ENOMEM));
-            pthread_mutex_lock(&priv->mutex);
-            priv->stats.out_of_memory_errors++;
-            pthread_mutex_unlock(&priv->mutex);
-            r = ENOMEM;
-            break;
-        case Z_BUF_ERROR:
-            (*config->log)(LOG_ERR, "zlib uncompress: %s", "decompressed block is oversize");
-            r = EIO;
-            break;
-        case Z_DATA_ERROR:
-            (*config->log)(LOG_ERR, "zlib uncompress: %s", "data is corrupted or truncated");
-            r = EIO;
-            break;
-        default:
-            (*config->log)(LOG_ERR, "unknown zlib compress2() error %d", r);
-            r = EIO;
-            break;
+            /* Proceed */
+            continue;
         }
 
 bad_encoding:
         /* It was something we don't recognize */
         (*config->log)(LOG_ERR, "read of block %0*jx returned unexpected encoding \"%s\"",
           S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num, layer);
+        r = EIO;
+        break;
+    }
+
+    /* Check for required encryption */
+    if (r == 0 && config->encryption != NULL && !encrypted) {
+        (*config->log)(LOG_ERR, "block %0*jx was supposed to be encrypted but wasn't", S3B_BLOCK_NUM_DIGITS, (uintmax_t)block_num);
         r = EIO;
     }
 
